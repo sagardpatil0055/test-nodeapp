@@ -94,17 +94,11 @@ pipeline {
           for (ip in ipList) {
             echo "🚀 Deploying to ${ip}"
             sh """
-              ssh -o StrictHostKeyChecking=no -i ${SSH_KEY_PATH} ubuntu@${ip} << 'EOF'
-                echo "🛑 Stopping old container..."
-                docker ps -q --filter name=test-nodeapp | grep . && docker stop test-nodeapp || echo "No running container to stop"
-                docker ps -a -q --filter name=test-nodeapp | grep . && docker rm test-nodeapp || echo "No container to remove"
-
-                echo "📥 Pulling new image..."
-                docker pull ${ECR_IMAGE}
-
-                echo "🚀 Running new container on port 8081..."
-                docker run -d --restart unless-stopped --name test-nodeapp -p 8081:8081 ${ECR_IMAGE}
-              EOF
+              ssh -o StrictHostKeyChecking=no -i ${SSH_KEY_PATH} ubuntu@${ip} \\
+                "docker stop test-nodeapp || true && \\
+                 docker rm test-nodeapp || true && \\
+                 docker pull ${ECR_IMAGE} && \\
+                 docker run -d --restart unless-stopped --name test-nodeapp -p 8081:8081 ${ECR_IMAGE}"
             """
           }
         }
