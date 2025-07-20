@@ -46,7 +46,7 @@ pipeline {
       steps {
         script {
           sh """
-            echo "🔨 Building image..."
+            echo "Building image..."
             docker build -t ${IMAGE_NAME}:${NEW_TAG} .
 
             echo "🏷️ Tagging image for ECR..."
