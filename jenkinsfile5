@@ -9,7 +9,7 @@ pipeline {
     ECR_URI        = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
     IMAGE_NAME     = 'test-nodeapp'
     APP_TAG_NAME   = 'app'  // EC2 tag Name=app
-    SSH_KEY_PATH   = "${HOME}/.ssh/id_rsa_app_connect"
+    SSH_KEY_PATH   = "${HOME}/project.pem"
   }
 
   parameters {
