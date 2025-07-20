@@ -1,108 +1,118 @@
 
-
 pipeline {
-    agent { label 'app' }
+  agent { label 'app' }
 
-    environment {
-        REPO_URL       = 'https://github.com/sagardpatil0055/test-nodeapp.git'
-        AWS_REGION     = 'us-east-1'
-        AWS_ACCOUNT_ID = '980104576357'
-        ECR_REPO       = 'test-nodeapp-repo'
-        ECR_URI        = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
-        IMAGE_NAME     = 'test-nodeapp'
-        APP_HOST_IP    = 'YOUR.APP.HOST.IP.HERE' // 🔁 Replace this
+  environment {
+    REPO_URL       = 'https://github.com/sagardpatil0055/test-nodeapp.git'
+    AWS_REGION     = 'us-east-1'
+    AWS_ACCOUNT_ID = '980104576357'
+    ECR_REPO       = 'test-nodeapp-repo'
+    ECR_URI        = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+    IMAGE_NAME     = 'test-nodeapp'
+    APP_TAG_NAME   = 'app'  // EC2 tag Name=app
+    SSH_KEY_PATH   = "${HOME}/project.pem"
+  }
+
+  parameters {
+    string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: "${params.BRANCH}", url: "${REPO_URL}"
+      }
     }
 
-    parameters {
-        string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
+    stage('Determine Next Integer Version') {
+      steps {
+        script {
+          echo "Fetching existing tags from ECR..."
+          def rawTags = sh(
+            script: "aws ecr list-images --repository-name ${ECR_REPO} --region ${AWS_REGION} --query 'imageIds[*].imageTag' --output text",
+            returnStdout: true
+          ).trim().split()
+
+          def numericTags = rawTags.findAll { it ==~ /^\\d+\$/ }.collect { it.toInteger() }
+          def lastVersion = numericTags ? numericTags.max() : 0
+          def newVersion = lastVersion + 1
+          env.NEW_TAG = "${newVersion}"
+          env.ECR_IMAGE = "${ECR_URI}:${env.NEW_TAG}"
+          echo "New version: ${env.NEW_TAG}"
+        }
+      }
     }
 
-    stages {
-        stage('Clone Repository') {
-            steps {
-                git branch: "${params.BRANCH}", url: "${REPO_URL}"
-            }
+    stage('Build & Push Docker Image') {
+      steps {
+        script {
+          sh """
+            echo "Building image..."
+            docker build -t ${IMAGE_NAME}:${NEW_TAG} .
+
+            echo "Tagging image for ECR..."
+            docker tag ${IMAGE_NAME}:${NEW_TAG} ${ECR_IMAGE}
+
+            echo "📤 Pushing image to ECR..."
+            docker push ${ECR_IMAGE}
+          """
         }
-
-        stage('Determine Next Integer Version') {
-            steps {
-                script {
-                    echo "🔍 Checking existing numeric tags in ECR..."
-
-                    def rawTags = sh(
-                        script: "aws ecr list-images --repository-name ${ECR_REPO} --region ${AWS_REGION} --query 'imageIds[*].imageTag' --output text",
-                        returnStdout: true
-                    ).trim().split()
-
-                    def numericTags = rawTags.findAll { it ==~ /^\\d+\$/ }.collect { it.toInteger() }
-
-                    def lastVersion = numericTags.size() > 0 ? numericTags.max() : 0
-                    def newVersion = lastVersion + 1
-
-                    env.NEW_TAG = "${newVersion}"
-                    echo "✅ New image version to push: ${env.NEW_TAG}"
-                }
-            }
-        }
-
-        stage('Build and Push Docker Image') {
-            steps {
-                script {
-                    sh """
-                        echo "🔨 Building Docker image..."
-                        docker build --pull -t ${IMAGE_NAME}:${NEW_TAG} .
-
-                        echo "🏷️ Tagging for ECR..."
-                        docker tag ${IMAGE_NAME}:${NEW_TAG} ${ECR_URI}:${NEW_TAG}
-
-                        echo "📤 Pushing to ECR..."
-                        docker push ${ECR_URI}:${NEW_TAG}
-                    """
-                }
-            }
-        }
-
-        stage('Pull for Validation') {
-            steps {
-                script {
-                    sh """
-                        echo "📥 Validating pushed image by pulling it back..."
-                        docker pull ${ECR_URI}:${NEW_TAG}
-                        docker image inspect ${ECR_URI}:${NEW_TAG}
-                    """
-                }
-            }
-        }
-
-        stage('Deploy to App Host') {
-            steps {
-                script {
-                    echo "🚀 Deploying to app host: ${APP_HOST_IP}"
-
-                    sh """
-                        ssh -o StrictHostKeyChecking=no root@${APP_HOST_IP} '
-                            echo "🛑 Stopping old container..."
-                            docker ps -q --filter name=test-nodeapp | grep . && docker stop test-nodeapp || echo "No running container to stop"
-                            docker ps -a -q --filter name=test-nodeapp | grep . && docker rm test-nodeapp || echo "No container to remove"
-
-                            echo "📥 Pulling new image..."
-                            docker pull ${ECR_URI}:${NEW_TAG}
-
-                            echo "🚀 Running new container on port 8081..."
-                            docker run -d --name test-nodeapp -p 8081:8081 ${ECR_URI}:${NEW_TAG}
-                        '
-                    """
-                }
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            echo "✅ Successfully built, pushed, and deployed version ${env.NEW_TAG} to ECR and app host"
-        }
-        failure {
-            echo "❌ Pipeline failed. Please check logs."
-        }
+    stage('Validate Pushed Image') {
+      steps {
+        sh """
+          echo "📥 Pulling image for validation..."
+          docker pull ${ECR_IMAGE}
+          docker image inspect ${ECR_IMAGE}
+        """
+      }
     }
+
+    stage('Fetch App Private IPs') {
+      steps {
+        script {
+          def ipListRaw = sh(
+            script: """aws ec2 describe-instances \
+              --filters "Name=tag:Name,Values=${APP_TAG_NAME}" "Name=instance-state-name,Values=running" \
+              --query "Reservations[*].Instances[*].PrivateIpAddress" \
+              --region ${AWS_REGION} --output text""",
+            returnStdout: true
+          ).trim()
+
+          def ipList = ipListRaw.split("\\s+")
+          env.APP_IPS = ipList.join(',')
+          echo "📡 App Host IPs: ${env.APP_IPS}"
+        }
+      }
+    }
+
+    stage('Deploy to All App Hosts') {
+      steps {
+        script {
+          def ipList = env.APP_IPS.split(',')
+          for (ip in ipList) {
+            echo "🚀 Deploying to ${ip}"
+            sh """
+              ssh -o StrictHostKeyChecking=no -i ${SSH_KEY_PATH} ubuntu@${ip} \\
+                "docker stop test-nodeapp || true && \\
+                 docker rm test-nodeapp || true && \\
+                 docker pull ${ECR_IMAGE} && \\
+                 docker run -d --restart unless-stopped --name test-nodeapp -p 8081:8081 ${ECR_IMAGE}"
+            """
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Deployment of version ${env.NEW_TAG} completed to all app hosts"
+    }
+    failure {
+      echo "❌ Deployment failed. Please investigate."
+    }
+  }
 }
