@@ -37,7 +37,7 @@ pipeline {
           def newVersion = lastVersion + 1
           env.NEW_TAG = "${newVersion}"
           env.ECR_IMAGE = "${ECR_URI}:${env.NEW_TAG}"
-          echo "✅ New version: ${env.NEW_TAG}"
+          echo "New version: ${env.NEW_TAG}"
         }
       }
     }
