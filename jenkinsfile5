@@ -26,7 +26,7 @@ pipeline {
     stage('Determine Next Integer Version') {
       steps {
         script {
-          echo "🔍 Fetching existing tags from ECR..."
+          echo "Fetching existing tags from ECR..."
           def rawTags = sh(
             script: "aws ecr list-images --repository-name ${ECR_REPO} --region ${AWS_REGION} --query 'imageIds[*].imageTag' --output text",
             returnStdout: true
